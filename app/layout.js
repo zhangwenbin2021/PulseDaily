@@ -1,6 +1,7 @@
 import "./globals.css"
 import { Inter } from "next/font/google"
 import Image from "next/image"
+import Script from "next/script"
 
 import ExportButton from "@/components/ExportButton"
 
@@ -25,6 +26,22 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className="h-full">
+      <head>
+        {/* Google Analytics (gtag.js) */}
+        <Script
+          async
+          src="https://www.googletagmanager.com/gtag/js?id=G-0HDDCX5K16"
+          strategy="afterInteractive"
+        />
+        <Script id="ga-gtag" strategy="afterInteractive">
+          {`
+            window.dataLayer = window.dataLayer || [];
+            function gtag(){dataLayer.push(arguments);}
+            gtag('js', new Date());
+            gtag('config', 'G-0HDDCX5K16');
+          `}
+        </Script>
+      </head>
       <body
         className={`${inter.variable} min-h-full bg-slate-50 text-slate-900 antialiased`}
       >
