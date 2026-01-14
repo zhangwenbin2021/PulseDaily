@@ -3,9 +3,13 @@
 import { useEffect, useRef, useState } from "react"
 
 const STORAGE_KEY = "pulseDailyReminders"
+const STORAGE_VERSION = 2
+const MAX_REMINDERS = 20
 
 const DEFAULT_HYDRATION_MIN = 60
 const DEFAULT_EYE_REST_MIN = 20
+const DEFAULT_HYDRATION_TITLE = "Hydration Reminder"
+const DEFAULT_EYE_REST_TITLE = "Eye Rest"
 const DEFAULT_HYDRATION_BODY = "Time to drink water!"
 const DEFAULT_EYE_REST_BODY = "Time to rest your eyes for 20 seconds."
 
@@ -26,43 +30,135 @@ function getNow() {
   return Date.now()
 }
 
-function getDefaultState() {
+function makeId() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID()
+  }
+  return `${Date.now()}_${Math.random().toString(16).slice(2)}`
+}
+
+function getDefaultItems() {
+  return [
+    {
+      id: "preset_hydration",
+      enabled: false,
+      intervalMin: DEFAULT_HYDRATION_MIN,
+      title: DEFAULT_HYDRATION_TITLE,
+      body: DEFAULT_HYDRATION_BODY,
+      nextAt: null
+    },
+    {
+      id: "preset_eye_rest",
+      enabled: false,
+      intervalMin: DEFAULT_EYE_REST_MIN,
+      title: DEFAULT_EYE_REST_TITLE,
+      body: DEFAULT_EYE_REST_BODY,
+      nextAt: null
+    }
+  ]
+}
+
+function sanitizeText(value, fallback, maxLen) {
+  if (typeof value !== "string") return fallback
+  const trimmed = value.trim()
+  if (!trimmed) return fallback
+  return trimmed.slice(0, maxLen)
+}
+
+function sanitizeItem(item, fallbackId) {
+  const safe = item && typeof item === "object" ? item : {}
+  const id = typeof safe.id === "string" && safe.id ? safe.id : fallbackId
+  const enabled = Boolean(safe.enabled)
+  const intervalMin = clampIntervalMinutes(safe.intervalMin, 60)
+  const title = sanitizeText(safe.title, "Reminder", 60)
+  const body = typeof safe.body === "string" ? safe.body.trim().slice(0, 160) : ""
+  const nextAt = typeof safe.nextAt === "number" ? safe.nextAt : null
+  return { id, enabled, intervalMin, title, body, nextAt }
+}
+
+function normalizeState(parsed) {
+  const items = Array.isArray(parsed?.items) ? parsed.items : null
+  if (!items) {
+    return { version: STORAGE_VERSION, items: getDefaultItems() }
+  }
+  const normalized = items
+    .slice(0, MAX_REMINDERS)
+    .map((it, idx) => sanitizeItem(it, `r_${idx}`))
+  return { version: STORAGE_VERSION, items: normalized }
+}
+
+function migrateLegacyState(parsed) {
+  const hydrationEnabled = Boolean(parsed?.hydrationEnabled)
+  const eyeRestEnabled = Boolean(parsed?.eyeRestEnabled)
+
+  const hydrationIntervalMin = clampIntervalMinutes(
+    parsed?.hydrationIntervalMin,
+    DEFAULT_HYDRATION_MIN
+  )
+  const eyeRestIntervalMin = clampIntervalMinutes(parsed?.eyeRestIntervalMin, DEFAULT_EYE_REST_MIN)
+
+  const hydrationBody =
+    typeof parsed?.hydrationBody === "string" ? parsed.hydrationBody : DEFAULT_HYDRATION_BODY
+  const eyeRestBody =
+    typeof parsed?.eyeRestBody === "string" ? parsed.eyeRestBody : DEFAULT_EYE_REST_BODY
+
+  const hydrationNextAt =
+    typeof parsed?.hydrationNextAt === "number"
+      ? parsed.hydrationNextAt
+      : hydrationEnabled
+        ? getNow() + minutesToMs(hydrationIntervalMin)
+        : null
+
+  const eyeRestNextAt =
+    typeof parsed?.eyeRestNextAt === "number"
+      ? parsed.eyeRestNextAt
+      : eyeRestEnabled
+        ? getNow() + minutesToMs(eyeRestIntervalMin)
+        : null
+
   return {
-    hydrationEnabled: false,
-    eyeRestEnabled: false,
-    hydrationNextAt: null,
-    eyeRestNextAt: null,
-    hydrationIntervalMin: DEFAULT_HYDRATION_MIN,
-    eyeRestIntervalMin: DEFAULT_EYE_REST_MIN,
-    hydrationBody: DEFAULT_HYDRATION_BODY,
-    eyeRestBody: DEFAULT_EYE_REST_BODY
+    version: STORAGE_VERSION,
+    items: [
+      {
+        id: "preset_hydration",
+        enabled: hydrationEnabled,
+        intervalMin: hydrationIntervalMin,
+        title: DEFAULT_HYDRATION_TITLE,
+        body: sanitizeText(hydrationBody, DEFAULT_HYDRATION_BODY, 160),
+        nextAt: hydrationNextAt
+      },
+      {
+        id: "preset_eye_rest",
+        enabled: eyeRestEnabled,
+        intervalMin: eyeRestIntervalMin,
+        title: DEFAULT_EYE_REST_TITLE,
+        body: sanitizeText(eyeRestBody, DEFAULT_EYE_REST_BODY, 160),
+        nextAt: eyeRestNextAt
+      }
+    ]
   }
 }
 
 function loadState() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
-    if (!raw) return getDefaultState()
+    if (!raw) return { version: STORAGE_VERSION, items: getDefaultItems() }
     const parsed = JSON.parse(raw)
-    return {
-      hydrationEnabled: Boolean(parsed?.hydrationEnabled),
-      eyeRestEnabled: Boolean(parsed?.eyeRestEnabled),
-      hydrationNextAt:
-        typeof parsed?.hydrationNextAt === "number" ? parsed.hydrationNextAt : null,
-      eyeRestNextAt:
-        typeof parsed?.eyeRestNextAt === "number" ? parsed.eyeRestNextAt : null,
-      hydrationIntervalMin: clampIntervalMinutes(
-        parsed?.hydrationIntervalMin,
-        DEFAULT_HYDRATION_MIN
-      ),
-      eyeRestIntervalMin: clampIntervalMinutes(parsed?.eyeRestIntervalMin, DEFAULT_EYE_REST_MIN),
-      hydrationBody:
-        typeof parsed?.hydrationBody === "string" ? parsed.hydrationBody : DEFAULT_HYDRATION_BODY,
-      eyeRestBody:
-        typeof parsed?.eyeRestBody === "string" ? parsed.eyeRestBody : DEFAULT_EYE_REST_BODY
+
+    if (parsed?.version === STORAGE_VERSION || Array.isArray(parsed?.items)) {
+      return normalizeState(parsed)
     }
+
+    if (
+      typeof parsed?.hydrationEnabled !== "undefined" ||
+      typeof parsed?.eyeRestEnabled !== "undefined"
+    ) {
+      return migrateLegacyState(parsed)
+    }
+
+    return { version: STORAGE_VERSION, items: getDefaultItems() }
   } catch {
-    return getDefaultState()
+    return { version: STORAGE_VERSION, items: getDefaultItems() }
   }
 }
 
@@ -74,13 +170,12 @@ function saveState(next) {
   }
 }
 
-function Switch({ label, description, checked, onChange, children }) {
+function Switch({ label, description, checked, onChange }) {
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
-        <p className="text-sm font-medium text-slate-900">{label}</p>
-        <p className="mt-1 text-xs text-slate-500">{description}</p>
-        {children ? <div className="mt-3">{children}</div> : null}
+        {label ? <p className="text-sm font-medium text-slate-900">{label}</p> : null}
+        {description ? <p className="mt-1 text-xs text-slate-500">{description}</p> : null}
       </div>
 
       <button
@@ -88,9 +183,7 @@ function Switch({ label, description, checked, onChange, children }) {
         onClick={() => onChange(!checked)}
         className={[
           "relative mt-0.5 h-6 w-11 shrink-0 rounded-full border transition-colors",
-          checked
-            ? "border-emerald-500 bg-emerald-500"
-            : "border-slate-200 bg-slate-100"
+          checked ? "border-emerald-500 bg-emerald-500" : "border-slate-200 bg-slate-100"
         ].join(" ")}
         aria-pressed={checked}
       >
@@ -101,7 +194,7 @@ function Switch({ label, description, checked, onChange, children }) {
           ].join(" ")}
           aria-hidden="true"
         />
-        <span className="sr-only">{label}</span>
+        <span className="sr-only">{label || "Toggle"}</span>
       </button>
     </div>
   )
@@ -128,7 +221,6 @@ function showNotification({ title, body }) {
   try {
     const n = new Notification(title, { body })
     n.onclick = () => {
-      // Attempt to focus the tab, then navigate to the app.
       window.focus()
       window.location.href = window.location.origin
     }
@@ -137,158 +229,229 @@ function showNotification({ title, body }) {
   }
 }
 
+function formatNextIn(nextAt) {
+  if (typeof nextAt !== "number") return ""
+  const diffMs = nextAt - getNow()
+  if (diffMs <= 0) return "now"
+  const mins = Math.ceil(diffMs / 60_000)
+  if (mins <= 1) return "in ~1 min"
+  return `in ~${mins} min`
+}
+
 export default function ReminderModule() {
-  const [hydrationEnabled, setHydrationEnabled] = useState(false)
-  const [eyeRestEnabled, setEyeRestEnabled] = useState(false)
-  const [hydrationNextAt, setHydrationNextAt] = useState(null)
-  const [eyeRestNextAt, setEyeRestNextAt] = useState(null)
-  const [hydrationIntervalMin, setHydrationIntervalMin] = useState(DEFAULT_HYDRATION_MIN)
-  const [eyeRestIntervalMin, setEyeRestIntervalMin] = useState(DEFAULT_EYE_REST_MIN)
-  const [hydrationBody, setHydrationBody] = useState(DEFAULT_HYDRATION_BODY)
-  const [eyeRestBody, setEyeRestBody] = useState(DEFAULT_EYE_REST_BODY)
+  const [items, setItems] = useState([])
   const [error, setError] = useState("")
+  const [soundReady, setSoundReady] = useState(false)
+  const [soundBlocked, setSoundBlocked] = useState(false)
 
-  const stateRef = useRef(getDefaultState())
-  const hydrationTimerRef = useRef(null)
-  const eyeRestTimerRef = useRef(null)
+  const [isEditorOpen, setIsEditorOpen] = useState(false)
+  const [editingId, setEditingId] = useState(null)
+  const [draftTitle, setDraftTitle] = useState("")
+  const [draftBody, setDraftBody] = useState("")
+  const [draftIntervalMin, setDraftIntervalMin] = useState(60)
 
-  function persistRef(overrides) {
-    const base = stateRef.current ?? getDefaultState()
-    saveState({ ...base, ...overrides })
+  const stateRef = useRef({ items: [] })
+  const timerRef = useRef(null)
+  const audioRef = useRef(null)
+
+  function persistItems(nextItems) {
+    saveState({ version: STORAGE_VERSION, items: nextItems })
   }
 
-  function clearHydrationTimer() {
-    if (hydrationTimerRef.current) clearInterval(hydrationTimerRef.current)
-    hydrationTimerRef.current = null
+  function clearTimer() {
+    if (timerRef.current) clearInterval(timerRef.current)
+    timerRef.current = null
   }
 
-  function clearEyeRestTimer() {
-    if (eyeRestTimerRef.current) clearInterval(eyeRestTimerRef.current)
-    eyeRestTimerRef.current = null
+  async function initAudioFromGesture() {
+    if (typeof window === "undefined") return false
+    const AudioContextCtor = window.AudioContext || window.webkitAudioContext
+    if (!AudioContextCtor) return false
+
+    try {
+      if (!audioRef.current) audioRef.current = new AudioContextCtor()
+      if (audioRef.current.state === "suspended") {
+        await audioRef.current.resume()
+      }
+      setSoundReady(true)
+      setSoundBlocked(false)
+      return true
+    } catch {
+      setSoundBlocked(true)
+      return false
+    }
   }
 
-  function startHydrationTimer(nextAt) {
-    clearHydrationTimer()
+  async function playBeep() {
+    try {
+      const ctx = audioRef.current
+      if (!ctx) {
+        if (!soundBlocked) setSoundBlocked(true)
+        return false
+      }
 
-    // Timer logic:
-    // We use setInterval to periodically check whether it's time to notify.
-    // This allows the timer to "resume" after reload using the stored nextAt timestamp.
-    hydrationTimerRef.current = setInterval(() => {
-      const now = getNow()
-      if (typeof nextAt !== "number") return
-      if (now < nextAt) return
+      if (ctx.state === "suspended") {
+        await ctx.resume()
+      }
 
-      const intervalMs = minutesToMs(
-        clampIntervalMinutes(stateRef.current?.hydrationIntervalMin, DEFAULT_HYDRATION_MIN)
-      )
-      const body =
-        typeof stateRef.current?.hydrationBody === "string" && stateRef.current.hydrationBody.trim()
-          ? stateRef.current.hydrationBody
-          : DEFAULT_HYDRATION_BODY
+      const osc = ctx.createOscillator()
+      const gain = ctx.createGain()
+      osc.type = "sine"
+      osc.frequency.value = 880
+      gain.gain.value = 0.0001
+      osc.connect(gain)
+      gain.connect(ctx.destination)
 
-      showNotification({
-        title: "Hydration Reminder",
-        body
-      })
+      const now = ctx.currentTime
+      gain.gain.setValueAtTime(0.0001, now)
+      gain.gain.exponentialRampToValueAtTime(0.12, now + 0.01)
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12)
+      osc.start(now)
+      osc.stop(now + 0.14)
 
-      const scheduled = now + intervalMs
-      setHydrationNextAt(scheduled)
-      persistRef({ hydrationEnabled: true, hydrationNextAt: scheduled })
-      nextAt = scheduled
-    }, 30_000)
-  }
-
-  function startEyeRestTimer(nextAt) {
-    clearEyeRestTimer()
-
-    eyeRestTimerRef.current = setInterval(() => {
-      const now = getNow()
-      if (typeof nextAt !== "number") return
-      if (now < nextAt) return
-
-      const intervalMs = minutesToMs(
-        clampIntervalMinutes(stateRef.current?.eyeRestIntervalMin, DEFAULT_EYE_REST_MIN)
-      )
-      const body =
-        typeof stateRef.current?.eyeRestBody === "string" && stateRef.current.eyeRestBody.trim()
-          ? stateRef.current.eyeRestBody
-          : DEFAULT_EYE_REST_BODY
-
-      showNotification({
-        title: "Eye Rest",
-        body
-      })
-
-      const scheduled = now + intervalMs
-      setEyeRestNextAt(scheduled)
-      persistRef({ eyeRestEnabled: true, eyeRestNextAt: scheduled })
-      nextAt = scheduled
-    }, 30_000)
+      setSoundReady(true)
+      return true
+    } catch {
+      if (!soundBlocked) setSoundBlocked(true)
+      return false
+    }
   }
 
   useEffect(() => {
-    // Load persisted toggle state on mount and resume timers.
     const stored = loadState()
-    setHydrationEnabled(stored.hydrationEnabled)
-    setEyeRestEnabled(stored.eyeRestEnabled)
-    setHydrationNextAt(stored.hydrationNextAt)
-    setEyeRestNextAt(stored.eyeRestNextAt)
-    setHydrationIntervalMin(stored.hydrationIntervalMin)
-    setEyeRestIntervalMin(stored.eyeRestIntervalMin)
-    setHydrationBody(stored.hydrationBody)
-    setEyeRestBody(stored.eyeRestBody)
+    setItems(stored.items)
+    persistItems(stored.items)
 
-    // Only resume timers if the browser already granted permission.
-    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-      if (stored.hydrationEnabled) {
-        const nextAt =
-          typeof stored.hydrationNextAt === "number"
-            ? stored.hydrationNextAt
-            : getNow() + minutesToMs(stored.hydrationIntervalMin)
-        setHydrationNextAt(nextAt)
-        startHydrationTimer(nextAt)
-      }
-      if (stored.eyeRestEnabled) {
-        const nextAt =
-          typeof stored.eyeRestNextAt === "number"
-            ? stored.eyeRestNextAt
-            : getNow() + minutesToMs(stored.eyeRestIntervalMin)
-        setEyeRestNextAt(nextAt)
-        startEyeRestTimer(nextAt)
-      }
-    }
+    timerRef.current = setInterval(() => {
+      const current = stateRef.current?.items ?? []
+      if (!Array.isArray(current) || current.length === 0) return
 
-    return () => {
-      clearHydrationTimer()
-      clearEyeRestTimer()
-    }
+      if (typeof Notification !== "undefined" && Notification.permission !== "granted") return
+
+      const now = getNow()
+      let changed = false
+
+      const nextItems = current.map((it) => {
+        if (!it.enabled) return it
+
+        const intervalMin = clampIntervalMinutes(it.intervalMin, 60)
+        const intervalMs = minutesToMs(intervalMin)
+        const nextAt = typeof it.nextAt === "number" ? it.nextAt : now + intervalMs
+
+        if (now < nextAt) {
+          if (nextAt !== it.nextAt || intervalMin !== it.intervalMin) {
+            changed = true
+            return { ...it, intervalMin, nextAt }
+          }
+          return it
+        }
+
+        const title = sanitizeText(it.title, "Reminder", 60)
+        const body = typeof it.body === "string" ? it.body : ""
+        showNotification({ title, body })
+        playBeep()
+
+        changed = true
+        return { ...it, intervalMin, title, body, nextAt: now + intervalMs }
+      })
+
+      if (changed) {
+        setItems(nextItems)
+        persistItems(nextItems)
+      }
+    }, 10_000)
+
+    return () => clearTimer()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
-    stateRef.current = {
-      hydrationEnabled,
-      eyeRestEnabled,
-      hydrationNextAt,
-      eyeRestNextAt,
-      hydrationIntervalMin,
-      eyeRestIntervalMin,
-      hydrationBody,
-      eyeRestBody
-    }
-  }, [
-    hydrationEnabled,
-    eyeRestEnabled,
-    hydrationNextAt,
-    eyeRestNextAt,
-    hydrationIntervalMin,
-    eyeRestIntervalMin,
-    hydrationBody,
-    eyeRestBody
-  ])
+    stateRef.current = { items }
+  }, [items])
 
-  async function toggleHydration(nextEnabled) {
+  function openCreate() {
     setError("")
+    setEditingId(null)
+    setDraftTitle("")
+    setDraftBody("")
+    setDraftIntervalMin(60)
+    setIsEditorOpen(true)
+  }
+
+  function openEdit(item) {
+    setError("")
+    setEditingId(item.id)
+    setDraftTitle(item.title)
+    setDraftBody(item.body ?? "")
+    setDraftIntervalMin(item.intervalMin)
+    setIsEditorOpen(true)
+  }
+
+  function closeEditor() {
+    setIsEditorOpen(false)
+    setEditingId(null)
+  }
+
+  function upsertDraft() {
+    setError("")
+    const title = sanitizeText(draftTitle, "", 60)
+    const body = typeof draftBody === "string" ? draftBody.trim().slice(0, 160) : ""
+    const intervalMin = clampIntervalMinutes(draftIntervalMin, 60)
+
+    if (!title) {
+      setError("Please enter a title.")
+      return
+    }
+
+    const now = getNow()
+    const next = items.slice()
+
+    if (editingId) {
+      const idx = next.findIndex((x) => x.id === editingId)
+      if (idx === -1) return
+      const existing = next[idx]
+      const nextAt = existing.enabled ? now + minutesToMs(intervalMin) : existing.nextAt
+      next[idx] = { ...existing, title, body, intervalMin, nextAt }
+      setItems(next)
+      persistItems(next)
+      closeEditor()
+      return
+    }
+
+    if (next.length >= MAX_REMINDERS) {
+      setError(`You can create up to ${MAX_REMINDERS} reminders.`)
+      return
+    }
+
+    next.unshift(
+      sanitizeItem(
+        {
+          id: makeId(),
+          enabled: false,
+          intervalMin,
+          title,
+          body,
+          nextAt: null
+        },
+        makeId()
+      )
+    )
+
+    setItems(next)
+    persistItems(next)
+    closeEditor()
+  }
+
+  function deleteItem(id) {
+    setError("")
+    const next = items.filter((x) => x.id !== id)
+    setItems(next)
+    persistItems(next)
+  }
+
+  async function toggleItem(id, nextEnabled) {
+    setError("")
+    await initAudioFromGesture()
 
     if (nextEnabled) {
       const ok = await ensureNotificationPermission()
@@ -296,169 +459,229 @@ export default function ReminderModule() {
         setError(
           "Notifications are blocked. Please allow notifications in your browser to enable reminders."
         )
-        setHydrationEnabled(false)
-        persistRef({ hydrationEnabled: false, hydrationNextAt: null })
         return
       }
-
-      const intervalMs = minutesToMs(
-        clampIntervalMinutes(stateRef.current?.hydrationIntervalMin, DEFAULT_HYDRATION_MIN)
-      )
-      const nextAt = getNow() + intervalMs
-      setHydrationEnabled(true)
-      setHydrationNextAt(nextAt)
-      persistRef({ hydrationEnabled: true, hydrationNextAt: nextAt })
-      startHydrationTimer(nextAt)
-      return
     }
 
-    // Turning off: stop timer and clear its schedule.
-    setHydrationEnabled(false)
-    setHydrationNextAt(null)
-    persistRef({ hydrationEnabled: false, hydrationNextAt: null })
-    clearHydrationTimer()
+    const now = getNow()
+    const next = items.map((it) => {
+      if (it.id !== id) return it
+      if (!nextEnabled) return { ...it, enabled: false, nextAt: null }
+      const intervalMin = clampIntervalMinutes(it.intervalMin, 60)
+      return { ...it, enabled: true, intervalMin, nextAt: now + minutesToMs(intervalMin) }
+    })
+    setItems(next)
+    persistItems(next)
   }
 
-  async function toggleEyeRest(nextEnabled) {
+  async function testNow(item) {
     setError("")
+    await initAudioFromGesture()
 
-    if (nextEnabled) {
-      const ok = await ensureNotificationPermission()
-      if (!ok) {
-        setError(
-          "Notifications are blocked. Please allow notifications in your browser to enable reminders."
-        )
-        setEyeRestEnabled(false)
-        persistRef({ eyeRestEnabled: false, eyeRestNextAt: null })
-        return
-      }
-
-      const intervalMs = minutesToMs(
-        clampIntervalMinutes(stateRef.current?.eyeRestIntervalMin, DEFAULT_EYE_REST_MIN)
+    const ok = await ensureNotificationPermission()
+    if (!ok) {
+      setError(
+        "Notifications are blocked. Please allow notifications in your browser to test reminders."
       )
-      const nextAt = getNow() + intervalMs
-      setEyeRestEnabled(true)
-      setEyeRestNextAt(nextAt)
-      persistRef({ eyeRestEnabled: true, eyeRestNextAt: nextAt })
-      startEyeRestTimer(nextAt)
       return
     }
 
-    setEyeRestEnabled(false)
-    setEyeRestNextAt(null)
-    persistRef({ eyeRestEnabled: false, eyeRestNextAt: null })
-    clearEyeRestTimer()
-  }
-
-  function onChangeHydrationInterval(value) {
-    const nextMin = clampIntervalMinutes(value, hydrationIntervalMin)
-    setHydrationIntervalMin(nextMin)
-    persistRef({ hydrationIntervalMin: nextMin })
-
-    if (!hydrationEnabled) return
-    const nextAt = getNow() + minutesToMs(nextMin)
-    setHydrationNextAt(nextAt)
-    persistRef({ hydrationNextAt: nextAt })
-    startHydrationTimer(nextAt)
-  }
-
-  function onChangeEyeRestInterval(value) {
-    const nextMin = clampIntervalMinutes(value, eyeRestIntervalMin)
-    setEyeRestIntervalMin(nextMin)
-    persistRef({ eyeRestIntervalMin: nextMin })
-
-    if (!eyeRestEnabled) return
-    const nextAt = getNow() + minutesToMs(nextMin)
-    setEyeRestNextAt(nextAt)
-    persistRef({ eyeRestNextAt: nextAt })
-    startEyeRestTimer(nextAt)
+    showNotification({
+      title: sanitizeText(item.title, "Reminder", 60),
+      body: typeof item.body === "string" ? item.body : ""
+    })
+    playBeep()
   }
 
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-      <h2 className="text-sm font-semibold text-slate-900">Reminders</h2>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold text-slate-900">Reminders</h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Create custom interval reminders (max {MAX_REMINDERS}).
+          </p>
+        </div>
+
+        <button
+          type="button"
+          onClick={openCreate}
+          disabled={items.length >= MAX_REMINDERS}
+          className={[
+            "rounded-xl px-3 py-2 text-xs font-semibold shadow-sm transition",
+            items.length >= MAX_REMINDERS
+              ? "cursor-not-allowed bg-slate-100 text-slate-400"
+              : "bg-slate-900 text-white hover:bg-slate-800"
+          ].join(" ")}
+        >
+          Add reminder
+        </button>
+      </div>
+
       <p className="mt-1 text-xs text-slate-500">
-        Enable gentle timers to nudge you throughout the day.
+        Notifications require HTTPS (or localhost). Sound may require a click to enable.
       </p>
 
       <div className="mt-4 space-y-4">
-        <Switch
-          label="Hydration Reminder"
-          description="Get notified on a custom interval."
-          checked={hydrationEnabled}
-          onChange={toggleHydration}
-        >
-          <div className="space-y-3">
-            <label className="block">
-              <span className="text-xs font-medium text-slate-700">Interval (minutes)</span>
-              <input
-                type="number"
-                min={1}
-                max={24 * 60}
-                step={1}
-                value={hydrationIntervalMin}
-                onChange={(e) => onChangeHydrationInterval(e.target.value)}
-                className="mt-1 w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs font-medium text-slate-700">Reminder text</span>
-              <input
-                type="text"
-                value={hydrationBody}
-                onChange={(e) => {
-                  const next = e.target.value
-                  setHydrationBody(next)
-                  persistRef({ hydrationBody: next })
-                }}
-                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                placeholder={DEFAULT_HYDRATION_BODY}
-              />
-            </label>
+        {items.length === 0 ? (
+          <p className="text-sm text-slate-500">No reminders yet.</p>
+        ) : (
+          <div className="space-y-4">
+            {items.map((item) => {
+              const nextLabel = item.enabled ? formatNextIn(item.nextAt) : ""
+              return (
+                <div key={item.id} className="rounded-xl border border-slate-200 bg-white p-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-900">{item.title}</p>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Every {item.intervalMin} min
+                        {nextLabel ? ` • Next ${nextLabel}` : ""}
+                      </p>
+                      {item.body ? <p className="mt-2 text-xs text-slate-700">{item.body}</p> : null}
+
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openEdit(item)}
+                          className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-900 hover:bg-slate-50"
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => testNow(item)}
+                          className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-900 hover:bg-slate-50"
+                        >
+                          Test now
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteItem(item.id)}
+                          className="rounded-lg border border-rose-200 bg-white px-2.5 py-1.5 text-xs font-medium text-rose-700 hover:bg-rose-50"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="shrink-0">
+                      <Switch
+                        label=""
+                        description=""
+                        checked={item.enabled}
+                        onChange={(nextEnabled) => toggleItem(item.id, nextEnabled)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
-        </Switch>
-        <Switch
-          label="Eye Rest"
-          description="Get notified on a custom interval."
-          checked={eyeRestEnabled}
-          onChange={toggleEyeRest}
-        >
-          <div className="space-y-3">
-            <label className="block">
-              <span className="text-xs font-medium text-slate-700">Interval (minutes)</span>
-              <input
-                type="number"
-                min={1}
-                max={24 * 60}
-                step={1}
-                value={eyeRestIntervalMin}
-                onChange={(e) => onChangeEyeRestInterval(e.target.value)}
-                className="mt-1 w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs font-medium text-slate-700">Reminder text</span>
-              <input
-                type="text"
-                value={eyeRestBody}
-                onChange={(e) => {
-                  const next = e.target.value
-                  setEyeRestBody(next)
-                  persistRef({ eyeRestBody: next })
-                }}
-                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
-                placeholder={DEFAULT_EYE_REST_BODY}
-              />
-            </label>
-          </div>
-        </Switch>
+        )}
       </div>
 
       {error ? <p className="mt-3 text-xs text-rose-600">{error}</p> : null}
 
-      <p className="mt-3 text-xs text-slate-400">
-        Note: Browser notifications usually require HTTPS (or localhost).
-      </p>
+      {!soundReady ? (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-slate-50 p-3">
+          <p className="text-xs text-slate-600">Sound is not enabled yet. Click to enable.</p>
+          <button
+            type="button"
+            onClick={async () => {
+              await initAudioFromGesture()
+              await playBeep()
+            }}
+            className="rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500"
+          >
+            Enable sound
+          </button>
+        </div>
+      ) : null}
+
+      {soundBlocked ? (
+        <p className="mt-2 text-xs text-amber-700">
+          Sound may be blocked by your browser. Use “Enable sound” or click “Test now” to allow it.
+        </p>
+      ) : null}
+
+      <p className="mt-3 text-xs text-slate-400">Tip: Keep this tab open to receive reminders.</p>
+
+      {isEditorOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-4 shadow-xl">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-900">
+                  {editingId ? "Edit reminder" : "New reminder"}
+                </p>
+                <p className="mt-1 text-xs text-slate-500">Fixed-interval loop reminders.</p>
+              </div>
+              <button
+                type="button"
+                onClick={closeEditor}
+                className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-900 hover:bg-slate-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 space-y-3">
+              <label className="block">
+                <span className="text-xs font-medium text-slate-700">Interval (minutes)</span>
+                <input
+                  type="number"
+                  min={1}
+                  max={24 * 60}
+                  step={1}
+                  value={draftIntervalMin}
+                  onChange={(e) => setDraftIntervalMin(e.target.value)}
+                  className="mt-1 w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-medium text-slate-700">Title</span>
+                <input
+                  type="text"
+                  value={draftTitle}
+                  onChange={(e) => setDraftTitle(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                  placeholder="e.g. Stretch break"
+                />
+              </label>
+
+              <label className="block">
+                <span className="text-xs font-medium text-slate-700">Content</span>
+                <input
+                  type="text"
+                  value={draftBody}
+                  onChange={(e) => setDraftBody(e.target.value)}
+                  className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                  placeholder="Optional"
+                />
+              </label>
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={closeEditor}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-900 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={upsertDraft}
+                className="rounded-xl bg-slate-900 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }
