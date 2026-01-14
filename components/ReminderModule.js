@@ -4,8 +4,23 @@ import { useEffect, useRef, useState } from "react"
 
 const STORAGE_KEY = "pulseDailyReminders"
 
-const HYDRATION_MS = 60 * 60 * 1000 // 60 minutes
-const EYE_REST_MS = 20 * 60 * 1000 // 20 minutes
+const DEFAULT_HYDRATION_MIN = 60
+const DEFAULT_EYE_REST_MIN = 20
+const DEFAULT_HYDRATION_BODY = "Time to drink water!"
+const DEFAULT_EYE_REST_BODY = "Time to rest your eyes for 20 seconds."
+
+function clampIntervalMinutes(value, fallback) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return fallback
+  const rounded = Math.round(parsed)
+  if (rounded < 1) return 1
+  if (rounded > 24 * 60) return 24 * 60
+  return rounded
+}
+
+function minutesToMs(minutes) {
+  return minutes * 60 * 1000
+}
 
 function getNow() {
   return Date.now()
@@ -16,7 +31,11 @@ function getDefaultState() {
     hydrationEnabled: false,
     eyeRestEnabled: false,
     hydrationNextAt: null,
-    eyeRestNextAt: null
+    eyeRestNextAt: null,
+    hydrationIntervalMin: DEFAULT_HYDRATION_MIN,
+    eyeRestIntervalMin: DEFAULT_EYE_REST_MIN,
+    hydrationBody: DEFAULT_HYDRATION_BODY,
+    eyeRestBody: DEFAULT_EYE_REST_BODY
   }
 }
 
@@ -31,7 +50,16 @@ function loadState() {
       hydrationNextAt:
         typeof parsed?.hydrationNextAt === "number" ? parsed.hydrationNextAt : null,
       eyeRestNextAt:
-        typeof parsed?.eyeRestNextAt === "number" ? parsed.eyeRestNextAt : null
+        typeof parsed?.eyeRestNextAt === "number" ? parsed.eyeRestNextAt : null,
+      hydrationIntervalMin: clampIntervalMinutes(
+        parsed?.hydrationIntervalMin,
+        DEFAULT_HYDRATION_MIN
+      ),
+      eyeRestIntervalMin: clampIntervalMinutes(parsed?.eyeRestIntervalMin, DEFAULT_EYE_REST_MIN),
+      hydrationBody:
+        typeof parsed?.hydrationBody === "string" ? parsed.hydrationBody : DEFAULT_HYDRATION_BODY,
+      eyeRestBody:
+        typeof parsed?.eyeRestBody === "string" ? parsed.eyeRestBody : DEFAULT_EYE_REST_BODY
     }
   } catch {
     return getDefaultState()
@@ -46,12 +74,13 @@ function saveState(next) {
   }
 }
 
-function Switch({ label, description, checked, onChange }) {
+function Switch({ label, description, checked, onChange, children }) {
   return (
     <div className="flex items-start justify-between gap-4">
       <div>
         <p className="text-sm font-medium text-slate-900">{label}</p>
         <p className="mt-1 text-xs text-slate-500">{description}</p>
+        {children ? <div className="mt-3">{children}</div> : null}
       </div>
 
       <button
@@ -113,13 +142,19 @@ export default function ReminderModule() {
   const [eyeRestEnabled, setEyeRestEnabled] = useState(false)
   const [hydrationNextAt, setHydrationNextAt] = useState(null)
   const [eyeRestNextAt, setEyeRestNextAt] = useState(null)
+  const [hydrationIntervalMin, setHydrationIntervalMin] = useState(DEFAULT_HYDRATION_MIN)
+  const [eyeRestIntervalMin, setEyeRestIntervalMin] = useState(DEFAULT_EYE_REST_MIN)
+  const [hydrationBody, setHydrationBody] = useState(DEFAULT_HYDRATION_BODY)
+  const [eyeRestBody, setEyeRestBody] = useState(DEFAULT_EYE_REST_BODY)
   const [error, setError] = useState("")
 
+  const stateRef = useRef(getDefaultState())
   const hydrationTimerRef = useRef(null)
   const eyeRestTimerRef = useRef(null)
 
-  function persist(next) {
-    saveState(next)
+  function persistRef(overrides) {
+    const base = stateRef.current ?? getDefaultState()
+    saveState({ ...base, ...overrides })
   }
 
   function clearHydrationTimer() {
@@ -143,19 +178,22 @@ export default function ReminderModule() {
       if (typeof nextAt !== "number") return
       if (now < nextAt) return
 
+      const intervalMs = minutesToMs(
+        clampIntervalMinutes(stateRef.current?.hydrationIntervalMin, DEFAULT_HYDRATION_MIN)
+      )
+      const body =
+        typeof stateRef.current?.hydrationBody === "string" && stateRef.current.hydrationBody.trim()
+          ? stateRef.current.hydrationBody
+          : DEFAULT_HYDRATION_BODY
+
       showNotification({
         title: "Hydration Reminder",
-        body: "Time to drink water!"
+        body
       })
 
-      const scheduled = now + HYDRATION_MS
+      const scheduled = now + intervalMs
       setHydrationNextAt(scheduled)
-      persist({
-        hydrationEnabled: true,
-        eyeRestEnabled,
-        hydrationNextAt: scheduled,
-        eyeRestNextAt
-      })
+      persistRef({ hydrationEnabled: true, hydrationNextAt: scheduled })
       nextAt = scheduled
     }, 30_000)
   }
@@ -168,19 +206,22 @@ export default function ReminderModule() {
       if (typeof nextAt !== "number") return
       if (now < nextAt) return
 
+      const intervalMs = minutesToMs(
+        clampIntervalMinutes(stateRef.current?.eyeRestIntervalMin, DEFAULT_EYE_REST_MIN)
+      )
+      const body =
+        typeof stateRef.current?.eyeRestBody === "string" && stateRef.current.eyeRestBody.trim()
+          ? stateRef.current.eyeRestBody
+          : DEFAULT_EYE_REST_BODY
+
       showNotification({
         title: "Eye Rest",
-        body: "Time to rest your eyes for 20 seconds."
+        body
       })
 
-      const scheduled = now + EYE_REST_MS
+      const scheduled = now + intervalMs
       setEyeRestNextAt(scheduled)
-      persist({
-        hydrationEnabled,
-        eyeRestEnabled: true,
-        hydrationNextAt,
-        eyeRestNextAt: scheduled
-      })
+      persistRef({ eyeRestEnabled: true, eyeRestNextAt: scheduled })
       nextAt = scheduled
     }, 30_000)
   }
@@ -192,6 +233,10 @@ export default function ReminderModule() {
     setEyeRestEnabled(stored.eyeRestEnabled)
     setHydrationNextAt(stored.hydrationNextAt)
     setEyeRestNextAt(stored.eyeRestNextAt)
+    setHydrationIntervalMin(stored.hydrationIntervalMin)
+    setEyeRestIntervalMin(stored.eyeRestIntervalMin)
+    setHydrationBody(stored.hydrationBody)
+    setEyeRestBody(stored.eyeRestBody)
 
     // Only resume timers if the browser already granted permission.
     if (typeof Notification !== "undefined" && Notification.permission === "granted") {
@@ -199,7 +244,7 @@ export default function ReminderModule() {
         const nextAt =
           typeof stored.hydrationNextAt === "number"
             ? stored.hydrationNextAt
-            : getNow() + HYDRATION_MS
+            : getNow() + minutesToMs(stored.hydrationIntervalMin)
         setHydrationNextAt(nextAt)
         startHydrationTimer(nextAt)
       }
@@ -207,7 +252,7 @@ export default function ReminderModule() {
         const nextAt =
           typeof stored.eyeRestNextAt === "number"
             ? stored.eyeRestNextAt
-            : getNow() + EYE_REST_MS
+            : getNow() + minutesToMs(stored.eyeRestIntervalMin)
         setEyeRestNextAt(nextAt)
         startEyeRestTimer(nextAt)
       }
@@ -220,6 +265,28 @@ export default function ReminderModule() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  useEffect(() => {
+    stateRef.current = {
+      hydrationEnabled,
+      eyeRestEnabled,
+      hydrationNextAt,
+      eyeRestNextAt,
+      hydrationIntervalMin,
+      eyeRestIntervalMin,
+      hydrationBody,
+      eyeRestBody
+    }
+  }, [
+    hydrationEnabled,
+    eyeRestEnabled,
+    hydrationNextAt,
+    eyeRestNextAt,
+    hydrationIntervalMin,
+    eyeRestIntervalMin,
+    hydrationBody,
+    eyeRestBody
+  ])
+
   async function toggleHydration(nextEnabled) {
     setError("")
 
@@ -230,19 +297,17 @@ export default function ReminderModule() {
           "Notifications are blocked. Please allow notifications in your browser to enable reminders."
         )
         setHydrationEnabled(false)
-        persist({ hydrationEnabled: false, eyeRestEnabled, hydrationNextAt: null, eyeRestNextAt })
+        persistRef({ hydrationEnabled: false, hydrationNextAt: null })
         return
       }
 
-      const nextAt = getNow() + HYDRATION_MS
+      const intervalMs = minutesToMs(
+        clampIntervalMinutes(stateRef.current?.hydrationIntervalMin, DEFAULT_HYDRATION_MIN)
+      )
+      const nextAt = getNow() + intervalMs
       setHydrationEnabled(true)
       setHydrationNextAt(nextAt)
-      persist({
-        hydrationEnabled: true,
-        eyeRestEnabled,
-        hydrationNextAt: nextAt,
-        eyeRestNextAt
-      })
+      persistRef({ hydrationEnabled: true, hydrationNextAt: nextAt })
       startHydrationTimer(nextAt)
       return
     }
@@ -250,12 +315,7 @@ export default function ReminderModule() {
     // Turning off: stop timer and clear its schedule.
     setHydrationEnabled(false)
     setHydrationNextAt(null)
-    persist({
-      hydrationEnabled: false,
-      eyeRestEnabled,
-      hydrationNextAt: null,
-      eyeRestNextAt
-    })
+    persistRef({ hydrationEnabled: false, hydrationNextAt: null })
     clearHydrationTimer()
   }
 
@@ -269,32 +329,49 @@ export default function ReminderModule() {
           "Notifications are blocked. Please allow notifications in your browser to enable reminders."
         )
         setEyeRestEnabled(false)
-        persist({ hydrationEnabled, eyeRestEnabled: false, hydrationNextAt, eyeRestNextAt: null })
+        persistRef({ eyeRestEnabled: false, eyeRestNextAt: null })
         return
       }
 
-      const nextAt = getNow() + EYE_REST_MS
+      const intervalMs = minutesToMs(
+        clampIntervalMinutes(stateRef.current?.eyeRestIntervalMin, DEFAULT_EYE_REST_MIN)
+      )
+      const nextAt = getNow() + intervalMs
       setEyeRestEnabled(true)
       setEyeRestNextAt(nextAt)
-      persist({
-        hydrationEnabled,
-        eyeRestEnabled: true,
-        hydrationNextAt,
-        eyeRestNextAt: nextAt
-      })
+      persistRef({ eyeRestEnabled: true, eyeRestNextAt: nextAt })
       startEyeRestTimer(nextAt)
       return
     }
 
     setEyeRestEnabled(false)
     setEyeRestNextAt(null)
-    persist({
-      hydrationEnabled,
-      eyeRestEnabled: false,
-      hydrationNextAt,
-      eyeRestNextAt: null
-    })
+    persistRef({ eyeRestEnabled: false, eyeRestNextAt: null })
     clearEyeRestTimer()
+  }
+
+  function onChangeHydrationInterval(value) {
+    const nextMin = clampIntervalMinutes(value, hydrationIntervalMin)
+    setHydrationIntervalMin(nextMin)
+    persistRef({ hydrationIntervalMin: nextMin })
+
+    if (!hydrationEnabled) return
+    const nextAt = getNow() + minutesToMs(nextMin)
+    setHydrationNextAt(nextAt)
+    persistRef({ hydrationNextAt: nextAt })
+    startHydrationTimer(nextAt)
+  }
+
+  function onChangeEyeRestInterval(value) {
+    const nextMin = clampIntervalMinutes(value, eyeRestIntervalMin)
+    setEyeRestIntervalMin(nextMin)
+    persistRef({ eyeRestIntervalMin: nextMin })
+
+    if (!eyeRestEnabled) return
+    const nextAt = getNow() + minutesToMs(nextMin)
+    setEyeRestNextAt(nextAt)
+    persistRef({ eyeRestNextAt: nextAt })
+    startEyeRestTimer(nextAt)
   }
 
   return (
@@ -306,17 +383,75 @@ export default function ReminderModule() {
 
       <div className="mt-4 space-y-4">
         <Switch
-          label="Hydration Reminder (60min)"
-          description="Get notified every 60 minutes."
+          label="Hydration Reminder"
+          description="Get notified on a custom interval."
           checked={hydrationEnabled}
           onChange={toggleHydration}
-        />
+        >
+          <div className="space-y-3">
+            <label className="block">
+              <span className="text-xs font-medium text-slate-700">Interval (minutes)</span>
+              <input
+                type="number"
+                min={1}
+                max={24 * 60}
+                step={1}
+                value={hydrationIntervalMin}
+                onChange={(e) => onChangeHydrationInterval(e.target.value)}
+                className="mt-1 w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-slate-700">Reminder text</span>
+              <input
+                type="text"
+                value={hydrationBody}
+                onChange={(e) => {
+                  const next = e.target.value
+                  setHydrationBody(next)
+                  persistRef({ hydrationBody: next })
+                }}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                placeholder={DEFAULT_HYDRATION_BODY}
+              />
+            </label>
+          </div>
+        </Switch>
         <Switch
-          label="Eye Rest (20min)"
-          description="Get notified every 20 minutes."
+          label="Eye Rest"
+          description="Get notified on a custom interval."
           checked={eyeRestEnabled}
           onChange={toggleEyeRest}
-        />
+        >
+          <div className="space-y-3">
+            <label className="block">
+              <span className="text-xs font-medium text-slate-700">Interval (minutes)</span>
+              <input
+                type="number"
+                min={1}
+                max={24 * 60}
+                step={1}
+                value={eyeRestIntervalMin}
+                onChange={(e) => onChangeEyeRestInterval(e.target.value)}
+                className="mt-1 w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-slate-700">Reminder text</span>
+              <input
+                type="text"
+                value={eyeRestBody}
+                onChange={(e) => {
+                  const next = e.target.value
+                  setEyeRestBody(next)
+                  persistRef({ eyeRestBody: next })
+                }}
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-100"
+                placeholder={DEFAULT_EYE_REST_BODY}
+              />
+            </label>
+          </div>
+        </Switch>
       </div>
 
       {error ? <p className="mt-3 text-xs text-rose-600">{error}</p> : null}
@@ -327,4 +462,3 @@ export default function ReminderModule() {
     </section>
   )
 }
-
