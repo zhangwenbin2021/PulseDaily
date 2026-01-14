@@ -5,6 +5,8 @@ import Script from "next/script"
 
 import ExportButton from "@/components/ExportButton"
 
+const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL || "https://pulsedaily.codezs.online"
+
 // Load the Inter font from Google using Next.js built-in optimization.
 // "display: swap" helps avoid invisible text on slow connections.
 const inter = Inter({
@@ -15,7 +17,26 @@ const inter = Inter({
 
 export const metadata = {
   title: "PulseDaily",
-  description: "A mobile-first habit tracker built with Next.js + Tailwind.",
+  description:
+    "A fast, mobile-first habit tracker — no login, local-first, gentle reminders, and simple streak momentum.",
+  metadataBase: new URL(SITE_URL),
+  alternates: {
+    canonical: "/"
+  },
+  openGraph: {
+    type: "website",
+    url: "/",
+    title: "PulseDaily",
+    description:
+      "A fast, mobile-first habit tracker — no login, local-first, gentle reminders, and simple streak momentum.",
+    siteName: "PulseDaily"
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "PulseDaily",
+    description:
+      "A fast, mobile-first habit tracker — no login, local-first, gentle reminders, and simple streak momentum."
+  },
   // Browser tab icon (favicon). Using /public/logo.png and also app/icon.png as fallback.
   icons: {
     icon: "/logo.png",

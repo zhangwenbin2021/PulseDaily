@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://pulsedaily.codezs.online/sitemap.xml
+
