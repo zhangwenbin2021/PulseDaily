@@ -228,7 +228,7 @@ export default function HabitManager({
     // LocalStorage read + date-awareness:
     // - Load habits + completion status once on mount.
     // - If stored date !== today, reset completion status (but keep habits).
-    // - If LocalStorage is empty, initialize with sample habits.
+    // - If LocalStorage has no data yet, initialize with sample habits.
     if (!onHydrate || didHydrateRef.current) return
 
     didHydrateRef.current = true
@@ -236,18 +236,24 @@ export default function HabitManager({
     const today = getLocalDateKey()
 
     let loaded = null
+    let hasStoredPayload = false
     try {
       const text = localStorage.getItem(STORAGE_KEY)
-      if (text) loaded = JSON.parse(text)
+      if (text) {
+        loaded = JSON.parse(text)
+        hasStoredPayload = true
+      }
     } catch {
       loaded = null
+      hasStoredPayload = false
     }
 
     const normalized = normalizeStoredData(loaded)
 
-    // If empty storage, seed with two sample habits.
+    // Only seed sample habits on first run (no stored payload).
+    // If the user intentionally deletes all habits, keep it empty.
     const initialHabits =
-      normalized.habits.length === 0
+      !hasStoredPayload
         ? [
             { id: makeId(), name: "Drink Water" },
             { id: makeId(), name: "Read 1 Page" }
