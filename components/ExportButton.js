@@ -63,7 +63,14 @@ export default function ExportButton({ storageKey = STORAGE_KEY }) {
     const safePayload =
       payload && typeof payload === "object"
         ? payload
-        : { date: "", habits: [], statusById: {} }
+        : {
+            date: "",
+            habits: [],
+            statusById: {},
+            streakById: {},
+            lastCompleteDateById: {},
+            todayBackupById: {}
+          }
 
     const fileName = `pulseDaily_backup_${getFileDateKey()}.json`
     const json = JSON.stringify(safePayload, null, 2)
@@ -96,4 +103,3 @@ export default function ExportButton({ storageKey = STORAGE_KEY }) {
     </button>
   )
 }
-

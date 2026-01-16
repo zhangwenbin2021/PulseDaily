@@ -144,7 +144,14 @@ function getLocalDateKey(date = new Date()) {
 
 function normalizeStoredData(raw) {
   // Expected shape:
-  // { date: "YYYY-MM-DD", habits: [{id,name}], statusById: { [id]: 0|1|2 } }
+  // {
+  //   date: "YYYY-MM-DD",
+  //   habits: [{id,name}],
+  //   statusById: { [id]: 0|1|2 },
+  //   streakById: { [id]: number },
+  //   lastCompleteDateById: { [id]: "YYYY-MM-DD" },
+  //   todayBackupById: { [id]: { prevDate, prevStreak } }
+  // }
   const habits = Array.isArray(raw?.habits)
     ? raw.habits
         .map((h) => ({
@@ -156,18 +163,45 @@ function normalizeStoredData(raw) {
 
   const statusById =
     raw?.statusById && typeof raw.statusById === "object" ? raw.statusById : {}
+  const streakById =
+    raw?.streakById && typeof raw.streakById === "object" ? raw.streakById : {}
+  const lastCompleteDateById =
+    raw?.lastCompleteDateById && typeof raw.lastCompleteDateById === "object"
+      ? raw.lastCompleteDateById
+      : {}
+  const todayBackupById =
+    raw?.todayBackupById && typeof raw.todayBackupById === "object" ? raw.todayBackupById : {}
 
   // Ensure every habit has a valid status (0..2) and remove unknown keys.
   const nextStatusById = {}
+  const nextStreakById = {}
+  const nextLastCompleteDateById = {}
+  const nextTodayBackupById = {}
   for (const h of habits) {
     const s = Number(statusById[h.id] ?? 0)
     nextStatusById[h.id] = s === 1 || s === 2 ? s : 0
+    const streak = Number(streakById[h.id] ?? 0)
+    nextStreakById[h.id] = Number.isFinite(streak) && streak > 0 ? streak : 0
+    nextLastCompleteDateById[h.id] =
+      typeof lastCompleteDateById[h.id] === "string" ? lastCompleteDateById[h.id] : ""
+    const backup = todayBackupById[h.id]
+    if (backup && typeof backup === "object") {
+      const prevDate = typeof backup.prevDate === "string" ? backup.prevDate : ""
+      const prevStreak = Number(backup.prevStreak ?? 0)
+      nextTodayBackupById[h.id] = {
+        prevDate,
+        prevStreak: Number.isFinite(prevStreak) && prevStreak > 0 ? prevStreak : 0
+      }
+    }
   }
 
   return {
     date: typeof raw?.date === "string" ? raw.date : "",
     habits,
-    statusById: nextStatusById
+    statusById: nextStatusById,
+    streakById: nextStreakById,
+    lastCompleteDateById: nextLastCompleteDateById,
+    todayBackupById: nextTodayBackupById
   }
 }
 
@@ -265,7 +299,24 @@ export default function HabitManager({
     const initialStatusById = {}
     for (const h of initialHabits) initialStatusById[h.id] = shouldReset ? 0 : (normalized.statusById[h.id] ?? 0)
 
-    onHydrate({ habits: initialHabits, statusById: initialStatusById })
+    const initialStreakById = {}
+    const initialLastCompleteDateById = {}
+    const initialTodayBackupById = {}
+    for (const h of initialHabits) {
+      initialStreakById[h.id] = normalized.streakById[h.id] ?? 0
+      initialLastCompleteDateById[h.id] = normalized.lastCompleteDateById[h.id] ?? ""
+      if (!shouldReset && normalized.todayBackupById[h.id]) {
+        initialTodayBackupById[h.id] = normalized.todayBackupById[h.id]
+      }
+    }
+
+    onHydrate({
+      habits: initialHabits,
+      statusById: initialStatusById,
+      streakById: initialStreakById,
+      lastCompleteDateById: initialLastCompleteDateById,
+      todayBackupById: initialTodayBackupById
+    })
   }, [onHydrate])
 
   function addHabit(rawName) {
