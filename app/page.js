@@ -1,6 +1,7 @@
 "use client"
 
 import DailyChecklist from "@/components/DailyChecklist"
+import AuthPanel from "@/components/AuthPanel"
 import HabitManager from "@/components/HabitManager"
 import MomentumBar from "@/components/MomentumBar"
 import ReminderModule from "@/components/ReminderModule"
@@ -160,6 +161,8 @@ export default function HomePage() {
     <div className="space-y-6">
       {/* Live Momentum Bar (fixed at the very top of the page). */}
       <MomentumBar completedHabits={completedHabits} totalHabits={totalHabits} />
+
+      <AuthPanel />
 
       {/* A quick overview section users see first on mobile. */}
       <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
