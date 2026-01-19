@@ -1,40 +1,24 @@
 "use client"
 
 import { useMemo, useState } from "react"
+import { createClient } from "@/lib/supabase/client"
+import {
+  buildHabitPayloadFromNames,
+  loadReminderPayloadFromStorage,
+  saveHabitPayloadToStorage
+} from "@/lib/pulseStorage"
 
-function makeId() {
-  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
-    return crypto.randomUUID()
-  }
-  return `${Date.now()}_${Math.random().toString(16).slice(2)}`
-}
-
-function getTodayKey() {
-  const d = new Date()
-  const y = d.getFullYear()
-  const m = String(d.getMonth() + 1).padStart(2, "0")
-  const day = String(d.getDate()).padStart(2, "0")
-  return `${y}-${m}-${day}`
-}
-
-function buildPayload(habitNames) {
-  const habits = habitNames
-    .map((name) => (typeof name === "string" ? name.trim().slice(0, 20) : ""))
-    .filter(Boolean)
-    .map((name) => ({ id: makeId(), name }))
-
-  const statusById = {}
-  for (const h of habits) statusById[h.id] = 0
-
-  return { date: getTodayKey(), habits, statusById }
-}
+const supabase = createClient()
 
 export default function TemplateCTA({ habitNames, label = "Use this template" }) {
   const [error, setError] = useState("")
 
-  const payload = useMemo(() => buildPayload(habitNames), [habitNames])
+  const payload = useMemo(
+    () => buildHabitPayloadFromNames(habitNames),
+    [habitNames]
+  )
 
-  function applyTemplate() {
+  async function applyTemplate() {
     setError("")
 
     try {
@@ -54,9 +38,40 @@ export default function TemplateCTA({ habitNames, label = "Use this template" })
     }
 
     try {
-      localStorage.setItem("pulseDailyData", JSON.stringify(payload))
+      saveHabitPayloadToStorage(payload)
     } catch {
       setError("Could not save to local storage (blocked or full).")
+      return
+    }
+
+    try {
+      const { data } = await supabase.auth.getUser()
+      const user = data?.user
+
+      if (user) {
+        const { data: existing, error: fetchError } = await supabase
+          .from("pulse_user_data")
+          .select("reminders_data")
+          .eq("user_id", user.id)
+          .maybeSingle()
+
+        if (fetchError) throw fetchError
+
+        const remindersPayload = existing?.reminders_data ?? loadReminderPayloadFromStorage()
+
+        const { error: upsertError } = await supabase
+          .from("pulse_user_data")
+          .upsert({
+            user_id: user.id,
+            habits_data: payload,
+            reminders_data: remindersPayload,
+            updated_at: new Date().toISOString()
+          })
+
+        if (upsertError) throw upsertError
+      }
+    } catch (syncError) {
+      setError(syncError?.message || "Cloud sync failed.")
       return
     }
 
@@ -75,9 +90,8 @@ export default function TemplateCTA({ habitNames, label = "Use this template" })
 
       {error ? <p className="text-xs text-rose-600">{error}</p> : null}
       <p className="text-xs text-slate-500">
-        Local-only: this writes to your browser storage (no account needed).
+        If you are signed in, this will sync to your cloud account.
       </p>
     </div>
   )
 }
-

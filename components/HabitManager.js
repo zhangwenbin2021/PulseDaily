@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useMemo, useRef, useState } from "react"
 
 function IconPencil(props) {
   return (
@@ -132,78 +132,6 @@ function normalizeHabitName(value) {
   return value.trim().slice(0, 20)
 }
 
-const STORAGE_KEY = "pulseDailyData"
-
-function getLocalDateKey(date = new Date()) {
-  // Local date in YYYY-MM-DD so resets happen based on the user's day.
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, "0")
-  const d = String(date.getDate()).padStart(2, "0")
-  return `${y}-${m}-${d}`
-}
-
-function normalizeStoredData(raw) {
-  // Expected shape:
-  // {
-  //   date: "YYYY-MM-DD",
-  //   habits: [{id,name}],
-  //   statusById: { [id]: 0|1|2 },
-  //   streakById: { [id]: number },
-  //   lastCompleteDateById: { [id]: "YYYY-MM-DD" },
-  //   todayBackupById: { [id]: { prevDate, prevStreak } }
-  // }
-  const habits = Array.isArray(raw?.habits)
-    ? raw.habits
-        .map((h) => ({
-          id: typeof h?.id === "string" ? h.id : makeId(),
-          name: typeof h?.name === "string" ? h.name.slice(0, 20) : ""
-        }))
-        .filter((h) => h.name.trim().length > 0)
-    : []
-
-  const statusById =
-    raw?.statusById && typeof raw.statusById === "object" ? raw.statusById : {}
-  const streakById =
-    raw?.streakById && typeof raw.streakById === "object" ? raw.streakById : {}
-  const lastCompleteDateById =
-    raw?.lastCompleteDateById && typeof raw.lastCompleteDateById === "object"
-      ? raw.lastCompleteDateById
-      : {}
-  const todayBackupById =
-    raw?.todayBackupById && typeof raw.todayBackupById === "object" ? raw.todayBackupById : {}
-
-  // Ensure every habit has a valid status (0..2) and remove unknown keys.
-  const nextStatusById = {}
-  const nextStreakById = {}
-  const nextLastCompleteDateById = {}
-  const nextTodayBackupById = {}
-  for (const h of habits) {
-    const s = Number(statusById[h.id] ?? 0)
-    nextStatusById[h.id] = s === 1 || s === 2 ? s : 0
-    const streak = Number(streakById[h.id] ?? 0)
-    nextStreakById[h.id] = Number.isFinite(streak) && streak > 0 ? streak : 0
-    nextLastCompleteDateById[h.id] =
-      typeof lastCompleteDateById[h.id] === "string" ? lastCompleteDateById[h.id] : ""
-    const backup = todayBackupById[h.id]
-    if (backup && typeof backup === "object") {
-      const prevDate = typeof backup.prevDate === "string" ? backup.prevDate : ""
-      const prevStreak = Number(backup.prevStreak ?? 0)
-      nextTodayBackupById[h.id] = {
-        prevDate,
-        prevStreak: Number.isFinite(prevStreak) && prevStreak > 0 ? prevStreak : 0
-      }
-    }
-  }
-
-  return {
-    date: typeof raw?.date === "string" ? raw.date : "",
-    habits,
-    statusById: nextStatusById,
-    streakById: nextStreakById,
-    lastCompleteDateById: nextLastCompleteDateById,
-    todayBackupById: nextTodayBackupById
-  }
-}
 
 function ActionButton({ label, onClick, tone = "neutral", children }) {
   const toneClasses =
@@ -235,8 +163,7 @@ export default function HabitManager({
   statusById,
   onAddHabit,
   onUpdateHabitName,
-  onDeleteHabit,
-  onHydrate
+  onDeleteHabit
 }) {
   // Suggestion tags that follow the "Two-Minute Rule" (quick, easy habits).
   const suggestions = useMemo(
@@ -256,69 +183,6 @@ export default function HabitManager({
   const [editingName, setEditingName] = useState("")
 
   const inputRef = useRef(null)
-  const didHydrateRef = useRef(false)
-
-  useEffect(() => {
-    // LocalStorage read + date-awareness:
-    // - Load habits + completion status once on mount.
-    // - If stored date !== today, reset completion status (but keep habits).
-    // - If LocalStorage has no data yet, initialize with sample habits.
-    if (!onHydrate || didHydrateRef.current) return
-
-    didHydrateRef.current = true
-
-    const today = getLocalDateKey()
-
-    let loaded = null
-    let hasStoredPayload = false
-    try {
-      const text = localStorage.getItem(STORAGE_KEY)
-      if (text) {
-        loaded = JSON.parse(text)
-        hasStoredPayload = true
-      }
-    } catch {
-      loaded = null
-      hasStoredPayload = false
-    }
-
-    const normalized = normalizeStoredData(loaded)
-
-    // Only seed sample habits on first run (no stored payload).
-    // If the user intentionally deletes all habits, keep it empty.
-    const initialHabits =
-      !hasStoredPayload
-        ? [
-            { id: makeId(), name: "Drink Water" },
-            { id: makeId(), name: "Read 1 Page" }
-          ]
-        : normalized.habits
-
-    // Date check: new day => reset all statuses to 0.
-    const shouldReset = normalized.date !== today
-    const initialStatusById = {}
-    for (const h of initialHabits) initialStatusById[h.id] = shouldReset ? 0 : (normalized.statusById[h.id] ?? 0)
-
-    const initialStreakById = {}
-    const initialLastCompleteDateById = {}
-    const initialTodayBackupById = {}
-    for (const h of initialHabits) {
-      initialStreakById[h.id] = normalized.streakById[h.id] ?? 0
-      initialLastCompleteDateById[h.id] = normalized.lastCompleteDateById[h.id] ?? ""
-      if (!shouldReset && normalized.todayBackupById[h.id]) {
-        initialTodayBackupById[h.id] = normalized.todayBackupById[h.id]
-      }
-    }
-
-    onHydrate({
-      habits: initialHabits,
-      statusById: initialStatusById,
-      streakById: initialStreakById,
-      lastCompleteDateById: initialLastCompleteDateById,
-      todayBackupById: initialTodayBackupById
-    })
-  }, [onHydrate])
-
   function addHabit(rawName) {
     const name = normalizeHabitName(rawName)
     if (!name) return

@@ -5,15 +5,20 @@ import AuthPanel from "@/components/AuthPanel"
 import HabitManager from "@/components/HabitManager"
 import MomentumBar from "@/components/MomentumBar"
 import ReminderModule from "@/components/ReminderModule"
-import { useMemo, useState } from "react"
+import { createClient } from "@/lib/supabase/client"
+import {
+  buildHabitPayloadFromState,
+  getLocalDateKey,
+  hydrateHabitPayload,
+  loadHabitPayloadFromStorage,
+  loadReminderPayloadFromStorage,
+  normalizeReminderPayload,
+  saveHabitPayloadToStorage,
+  saveReminderPayloadToStorage
+} from "@/lib/pulseStorage"
+import { useEffect, useMemo, useRef, useState } from "react"
 
-function getLocalDateKey(date = new Date()) {
-  // Local date in YYYY-MM-DD so streaks reset with the user's day.
-  const y = date.getFullYear()
-  const m = String(date.getMonth() + 1).padStart(2, "0")
-  const d = String(date.getDate()).padStart(2, "0")
-  return `${y}-${m}-${d}`
-}
+const supabase = createClient()
 
 // This is the home page ("/").
 // In the App Router, pages are React components exported from app/**/page.js.
@@ -27,7 +32,13 @@ export default function HomePage() {
   const [streakById, setStreakById] = useState({})
   const [lastCompleteDateById, setLastCompleteDateById] = useState({})
   const [todayBackupById, setTodayBackupById] = useState({})
+  const [reminderItems, setReminderItems] = useState(null)
   const [hasHydrated, setHasHydrated] = useState(false)
+  const [authUser, setAuthUser] = useState(null)
+  const [cloudStatus, setCloudStatus] = useState("idle")
+  const [syncError, setSyncError] = useState("")
+  const syncTimerRef = useRef(null)
+  const latestStateRef = useRef(null)
 
   function addHabit(name) {
     const trimmed = name.trim().slice(0, 20)
@@ -127,25 +138,173 @@ export default function HomePage() {
     }
   }
 
-  function hydrateFromStorage({
-    habits: nextHabits,
-    statusById: nextStatuses,
-    streakById: nextStreaks,
-    lastCompleteDateById: nextLastDates,
-    todayBackupById: nextBackups
-  }) {
-    // This is called once on app mount (from HabitManager).
-    setHabits(Array.isArray(nextHabits) ? nextHabits : [])
-    setStatusById(nextStatuses && typeof nextStatuses === "object" ? nextStatuses : {})
-    setStreakById(nextStreaks && typeof nextStreaks === "object" ? nextStreaks : {})
-    setLastCompleteDateById(
-      nextLastDates && typeof nextLastDates === "object" ? nextLastDates : {}
-    )
-    setTodayBackupById(
-      nextBackups && typeof nextBackups === "object" ? nextBackups : {}
-    )
+  useEffect(() => {
+    const { payload } = loadHabitPayloadFromStorage({ seedIfEmpty: true })
+    const reminders = loadReminderPayloadFromStorage()
+
+    setHabits(payload.habits)
+    setStatusById(payload.statusById)
+    setStreakById(payload.streakById)
+    setLastCompleteDateById(payload.lastCompleteDateById)
+    setTodayBackupById(payload.todayBackupById)
+    setReminderItems(reminders.items)
     setHasHydrated(true)
-  }
+  }, [])
+
+  useEffect(() => {
+    latestStateRef.current = {
+      habits,
+      statusById,
+      streakById,
+      lastCompleteDateById,
+      todayBackupById,
+      reminderItems: reminderItems ?? []
+    }
+  }, [habits, statusById, streakById, lastCompleteDateById, todayBackupById, reminderItems])
+
+  useEffect(() => {
+    let isMounted = true
+
+    supabase.auth.getUser().then(({ data, error }) => {
+      if (!isMounted) return
+      if (error) {
+        setSyncError(error.message)
+        return
+      }
+      setAuthUser(data?.user ?? null)
+    })
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setAuthUser(session?.user ?? null)
+    })
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    let isMounted = true
+
+    async function loadCloud() {
+      if (!authUser) {
+        setCloudStatus("idle")
+        return
+      }
+
+      setCloudStatus("loading")
+      setSyncError("")
+
+      const { data, error } = await supabase
+        .from("pulse_user_data")
+        .select("habits_data, reminders_data")
+        .eq("user_id", authUser.id)
+        .maybeSingle()
+
+      if (!isMounted) return
+
+      if (error) {
+        setSyncError(error.message)
+        setCloudStatus("error")
+        return
+      }
+
+      if (data?.habits_data) {
+        const cloudHabits = hydrateHabitPayload(data.habits_data, {
+          seedIfEmpty: false
+        })
+        const cloudReminders = normalizeReminderPayload(data.reminders_data)
+
+        setHabits(cloudHabits.habits)
+        setStatusById(cloudHabits.statusById)
+        setStreakById(cloudHabits.streakById)
+        setLastCompleteDateById(cloudHabits.lastCompleteDateById)
+        setTodayBackupById(cloudHabits.todayBackupById)
+        setReminderItems(cloudReminders.items)
+
+        saveHabitPayloadToStorage(cloudHabits)
+        saveReminderPayloadToStorage(cloudReminders)
+      } else {
+        const snapshot = latestStateRef.current
+        const habitsPayload = buildHabitPayloadFromState(snapshot || {})
+        const remindersPayload = normalizeReminderPayload({
+          version: 2,
+          items: snapshot?.reminderItems ?? []
+        })
+
+        await supabase.from("pulse_user_data").upsert({
+          user_id: authUser.id,
+          habits_data: habitsPayload,
+          reminders_data: remindersPayload,
+          updated_at: new Date().toISOString()
+        })
+      }
+
+      if (!isMounted) return
+      setCloudStatus("ready")
+    }
+
+    loadCloud()
+
+    return () => {
+      isMounted = false
+    }
+  }, [authUser])
+
+  useEffect(() => {
+    if (!hasHydrated) return
+
+    if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+
+    const habitsPayload = buildHabitPayloadFromState({
+      habits,
+      statusById,
+      streakById,
+      lastCompleteDateById,
+      todayBackupById
+    })
+    const remindersPayload = normalizeReminderPayload({
+      version: 2,
+      items: reminderItems ?? []
+    })
+
+    saveHabitPayloadToStorage(habitsPayload)
+    saveReminderPayloadToStorage(remindersPayload)
+
+    if (!authUser || cloudStatus !== "ready") return
+
+    syncTimerRef.current = setTimeout(async () => {
+      const { error } = await supabase.from("pulse_user_data").upsert({
+        user_id: authUser.id,
+        habits_data: habitsPayload,
+        reminders_data: remindersPayload,
+        updated_at: new Date().toISOString()
+      })
+
+      if (error) {
+        setSyncError(error.message)
+      } else {
+        setSyncError("")
+      }
+    }, 600)
+
+    return () => {
+      if (syncTimerRef.current) clearTimeout(syncTimerRef.current)
+    }
+  }, [
+    habits,
+    statusById,
+    streakById,
+    lastCompleteDateById,
+    todayBackupById,
+    reminderItems,
+    authUser,
+    cloudStatus,
+    hasHydrated
+  ])
 
   const { completedHabits, totalHabits } = useMemo(() => {
     const total = habits.length
@@ -179,20 +338,22 @@ export default function HomePage() {
         onAddHabit={addHabit}
         onUpdateHabitName={updateHabitName}
         onDeleteHabit={deleteHabit}
-        onHydrate={hydrateFromStorage}
       />
       <DailyChecklist
         habits={habits}
         statusById={statusById}
         onSetStatus={setHabitStatus}
-        hasHydrated={hasHydrated}
         streakById={streakById}
         lastCompleteDateById={lastCompleteDateById}
         todayBackupById={todayBackupById}
       />
 
       {/* Bottom-of-page reminder module */}
-      <ReminderModule />
+      <ReminderModule
+        items={reminderItems ?? []}
+        onItemsChange={setReminderItems}
+        storageEnabled={false}
+      />
     </div>
   )
 }

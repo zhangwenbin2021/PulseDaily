@@ -210,7 +210,6 @@ export default function DailyChecklist({
   habits = [],
   statusById = {},
   onSetStatus,
-  hasHydrated = false,
   streakById = {},
   lastCompleteDateById = {},
   todayBackupById = {}
@@ -276,43 +275,6 @@ export default function DailyChecklist({
     () => (shareHabitId ? habits.find((h) => h.id === shareHabitId) : null),
     [shareHabitId, habits]
   )
-
-  useEffect(() => {
-    // LocalStorage write:
-    // Save habit list + completion states whenever they change.
-    // Guarded by `hasHydrated` so we don't overwrite existing storage before the initial load finishes.
-    if (!hasHydrated) return
-
-    const today = (() => {
-      const d = new Date()
-      const y = d.getFullYear()
-      const m = String(d.getMonth() + 1).padStart(2, "0")
-      const day = String(d.getDate()).padStart(2, "0")
-      return `${y}-${m}-${day}`
-    })()
-
-    // Keep the stored status object aligned with the habit list (no orphan keys).
-    const nextStatusById = {}
-    for (const h of habits) {
-      const s = Number(statusById[h.id] ?? 0)
-      nextStatusById[h.id] = s === 1 || s === 2 ? s : 0
-    }
-
-    const payload = {
-      date: today,
-      habits,
-      statusById: nextStatusById,
-      streakById,
-      lastCompleteDateById,
-      todayBackupById
-    }
-
-    try {
-      localStorage.setItem("pulseDailyData", JSON.stringify(payload))
-    } catch {
-      // If storage is full/blocked, we silently skip (app still works in-memory).
-    }
-  }, [habits, statusById, hasHydrated, streakById, lastCompleteDateById, todayBackupById])
 
   useEffect(() => {
     return () => {

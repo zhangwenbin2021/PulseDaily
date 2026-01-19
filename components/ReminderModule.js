@@ -238,7 +238,11 @@ function formatNextIn(nextAt) {
   return `in ~${mins} min`
 }
 
-export default function ReminderModule() {
+export default function ReminderModule({
+  items: itemsProp,
+  onItemsChange,
+  storageEnabled = true
+}) {
   const [items, setItems] = useState([])
   const [error, setError] = useState("")
   const [soundReady, setSoundReady] = useState(false)
@@ -255,7 +259,10 @@ export default function ReminderModule() {
   const audioRef = useRef(null)
 
   function persistItems(nextItems) {
-    saveState({ version: STORAGE_VERSION, items: nextItems })
+    if (onItemsChange) onItemsChange(nextItems)
+    if (storageEnabled) {
+      saveState({ version: STORAGE_VERSION, items: nextItems })
+    }
   }
 
   function clearTimer() {
@@ -318,6 +325,16 @@ export default function ReminderModule() {
   }
 
   useEffect(() => {
+    if (Array.isArray(itemsProp)) {
+      setItems(itemsProp)
+      return
+    }
+
+    if (!storageEnabled) {
+      setItems(getDefaultItems())
+      return
+    }
+
     const stored = loadState()
     setItems(stored.items)
     persistItems(stored.items)
@@ -364,6 +381,11 @@ export default function ReminderModule() {
     return () => clearTimer()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!Array.isArray(itemsProp)) return
+    setItems(itemsProp)
+  }, [itemsProp])
 
   useEffect(() => {
     stateRef.current = { items }
