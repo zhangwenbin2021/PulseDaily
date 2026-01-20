@@ -325,10 +325,7 @@ export default function ReminderModule({
   }
 
   useEffect(() => {
-    if (Array.isArray(itemsProp)) {
-      setItems(itemsProp)
-      return
-    }
+    if (Array.isArray(itemsProp)) return
 
     if (!storageEnabled) {
       setItems(getDefaultItems())
@@ -338,7 +335,10 @@ export default function ReminderModule({
     const stored = loadState()
     setItems(stored.items)
     persistItems(stored.items)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
+  useEffect(() => {
     timerRef.current = setInterval(() => {
       const current = stateRef.current?.items ?? []
       if (!Array.isArray(current) || current.length === 0) return
